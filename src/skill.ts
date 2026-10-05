@@ -6,7 +6,7 @@
  * file is logged and skipped — tools keep working either way.
  */
 import { readFileSync } from 'node:fs'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { log } from './log.ts'
 
 interface SkillFile {

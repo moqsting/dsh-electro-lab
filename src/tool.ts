@@ -17,6 +17,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isIP } from 'node:net'
 import { readState, updateState } from './state.ts'
 import { defineTool, type DefineToolOptions, type InferArgs, type ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type { JsonValue, ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -255,6 +256,49 @@ function validateParamSpec(spec: unknown, path: string, errors: string[]): void 
   }
 }
 
+/** 审计 C3（SSRF）：IPv4 回环/私网/链路本地 CIDR 区间判断。 */
+function ipv4InBlockedRange(host: string): boolean {
+  const parts = host.split('.').map((p) => Number(p))
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false
+  const n = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+  const ranges: Array<[number, number]> = [
+    [0x7f000000, 0x7fffffff], // 127.0.0.0/8 回环
+    [0x0a000000, 0x0affffff], // 10.0.0.0/8 私网
+    [0xac100000, 0xac1fffff], // 172.16.0.0/12 私网
+    [0xc0a80000, 0xc0a8ffff], // 192.168.0.0/16 私网
+    [0xa9fe0000, 0xa9feffff], // 169.254.0.0/16 链路本地
+  ]
+  return ranges.some(([lo, hi]) => n >= lo && n <= hi)
+}
+
+/** 审计 C3（SSRF）：主机名是否落在黑名单（回环/私网/链路本地/ULA）。 */
+function isBlockedHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true
+  const kind = isIP(h)
+  if (kind === 4) return ipv4InBlockedRange(h)
+  if (kind === 6) {
+    const lower = h.toLowerCase()
+    if (lower === '::1') return true
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true // fc00::/7 ULA
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true // fe80::/10 链路本地
+  }
+  return false
+}
+
+/** 审计 C3（纵深）：请求头键必须在安全白名单内。 */
+function isForbiddenHeaderKey(key: string): boolean {
+  const lower = key.toLowerCase()
+  if (!/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(lower)) return true // 非 RFC 7230 token
+  const forbidden = new Set([
+    'host', 'content-length', 'content-type', 'transfer-encoding', 'connection',
+    'keep-alive', 'upgrade', 'proxy-authorization', 'te', 'trailer', 'expect',
+    'cookie', 'user-agent', 'accept', 'accept-encoding', 'accept-language',
+    'referer', 'origin', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest',
+  ])
+  return forbidden.has(lower)
+}
+
 /** Validation errors as a list of human-readable messages (empty = valid). */
 export function validateDeclaration(config: unknown): string[] {
   const errors: string[] = []
@@ -291,6 +335,25 @@ export function validateDeclaration(config: unknown): string[] {
   const http = options as { url?: unknown }
   if (typeof http.url !== 'string' || !/^https?:\/\//.test(http.url)) {
     errors.push('transportOptions.url must be an http(s) URL')
+    return errors
+  }
+  // 审计 C3：SSRF 黑名单——拒绝回环/私网/链路本地/ULA 主机。
+  try {
+    const host = new URL(http.url).hostname
+    if (isBlockedHost(host)) errors.push(`transportOptions.url 指向回环/私网地址（${host}），已被拒绝`)
+  } catch {
+    errors.push('transportOptions.url 不是合法 URL')
+  }
+  // 审计 C3（纵深）：headers 键白名单——防止手工改档案注入危险请求头。
+  const headers = (options as { headers?: unknown }).headers
+  if (headers !== undefined) {
+    if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+      errors.push('transportOptions.headers 必须是键值对象')
+    } else {
+      for (const key of Object.keys(headers as Record<string, unknown>)) {
+        if (isForbiddenHeaderKey(key)) errors.push(`transportOptions.headers 含不允许的键 "${key}"`)
+      }
+    }
   }
   return errors
 }

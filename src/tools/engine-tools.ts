@@ -7,7 +7,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { defineJsonTool } from '../tool.ts'
 import type { Engine } from '../engine/engine.ts'
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Context {
     tools: ToolRuntime
   }

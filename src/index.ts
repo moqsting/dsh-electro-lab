@@ -8,10 +8,9 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { Engine } from './engine/engine.ts'
 import { createEngineTools } from './tools/engine-tools.ts'
-import { createDeclarationTools } from './tools/declaration-tools.ts'
 import { compileExternalSolver } from './engine/external-solvers.ts'
 import { registerKernelSolvers } from './solvers/index.ts'
 import type { GenerationCall, GenerationResult, Record } from './generate.ts'
@@ -24,6 +23,7 @@ import {
   validateDeclaration,
 } from './tool.ts'
 import { registerGenerateEndpoints } from './generate-server.ts'
+import { rejectCrossOrigin } from './same-origin.ts'
 import { registerSkills } from './skill.ts'
 import { installPresets } from './preset.ts'
 import { attachConsoleSink, attachFileSink, log, resolveLevel, setLevel } from './log.ts'
@@ -34,7 +34,7 @@ export const name = 'dsh-electro-lab'
 /** Services required before mounting: the tool registry and the web server (endpoint host). */
 export const inject = ['tools', 'webServer']
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The web server the endpoints register on. */
     webServer: WebServerLike
@@ -61,6 +61,7 @@ type RouteHandler = (req: unknown, res: WebResponseLike) => void | Promise<void>
 /** An unexpected endpoint throw is logged before it reaches the web server; behavior is unchanged. */
 function guard(path: string, handler: RouteHandler): RouteHandler {
   return (req, res) => {
+    if (rejectCrossOrigin(req, res)) return
     try {
       const pending = handler(req, res)
       if (pending instanceof Promise) {
@@ -196,10 +197,6 @@ export function apply(ctx: Context): void {
 
     // LLM tool surface: engine primitives + markers.
     for (const tool of createEngineTools(engine)) {
-      disposers.push(ctx.tools.register(tool))
-    }
-    // Declaration management tools (the management surface lives outside the engine).
-    for (const tool of createDeclarationTools(recordsHome)) {
       disposers.push(ctx.tools.register(tool))
     }
 

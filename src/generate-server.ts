@@ -7,12 +7,13 @@
  * takes the services it needs (web server, optional llm/agentDefaultModel).
  */
 import { homedir } from 'node:os'
-import { dirname, join, basename } from 'node:path'
+import { dirname, join, basename, resolve, relative, sep, isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, realpathSync } from 'node:fs'
 import { readState, updateState } from './state.ts'
 import { log } from './log.ts'
+import { rejectCrossOrigin } from './same-origin.ts'
 import {
   ArticleFormat,
   ArticleLanguage,
@@ -613,9 +614,16 @@ function startGenerateJob(
       // source, PDF and the compiler's .aux/.log/.synctex.gz — stays inside it.
       // Markdown is written flat and is never compiled (PDF is LaTeX-only).
       const isLatex = format === ArticleFormat.Latex
-      const targetDir = isLatex ? join(directory, fileName.replace(/\.tex$/i, '')) : directory
+      // 审计 C1：输出路径必须落在 outputRoot（默认 <home>/generated）内，越界即抛错。
+      const root = resolve(deps.home, 'generated')
+      const resolvedDir = isAbsolute(directory) ? resolve(directory) : resolve(root, directory)
+      const targetDir = isLatex ? join(resolvedDir, fileName.replace(/\.tex$/i, '')) : resolvedDir
+      const target = resolve(targetDir, fileName)
+      const rel = relative(root, target)
+      if (rel !== '' && (rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel))) {
+        throw new Error(`输出路径越界：${target} 不在 ${root} 内`)
+      }
       mkdirSync(targetDir, { recursive: true })
-      const target = join(targetDir, fileName)
       writeFileSync(target, article, 'utf8')
       if (compile && isLatex) {
         job.phase = GenerationPhase.Compile
@@ -695,6 +703,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: GENERATE_PATH,
     handler: async (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'POST') {
         res.statusCode = 405
@@ -718,6 +727,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: GENERATE_CAPABILITY_PATH,
     handler: async (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'GET') {
         res.statusCode = 405
@@ -736,6 +746,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: LIST_DIRS_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'GET') {
         res.statusCode = 405
@@ -759,6 +770,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: LIST_ROOTS_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'GET') {
         res.statusCode = 405
@@ -776,6 +788,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: DIRECTORY_TREE_CSS_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'GET') {
         res.statusCode = 405
@@ -792,6 +805,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: GENERATE_CANCEL_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'POST') {
         res.statusCode = 405
@@ -811,6 +825,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: REVEAL_PATH,
     handler: async (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'POST') {
         res.statusCode = 405
@@ -836,6 +851,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: GENERATE_PROGRESS_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       if ((request.method ?? 'GET') !== 'GET') {
         res.statusCode = 405
@@ -868,6 +884,7 @@ export function registerGenerateEndpoints(ctx: GenerateContext, deps: GenerateDe
     kind: 'exact',
     path: GENERATE_DIR_PATH,
     handler: (req, res) => {
+      if (rejectCrossOrigin(req, res)) return
       const request = req as RequestLike
       const method = request.method ?? 'GET'
       if (method === 'PUT') {
