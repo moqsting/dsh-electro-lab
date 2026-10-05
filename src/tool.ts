@@ -258,9 +258,12 @@ function validateParamSpec(spec: unknown, path: string, errors: string[]): void 
 
 /** 审计 C3（SSRF）：IPv4 回环/私网/链路本地 CIDR 区间判断。 */
 function ipv4InBlockedRange(host: string): boolean {
-  const parts = host.split('.').map((p) => Number(p))
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false
-  const n = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+  const parts = host.split('.')
+  if (parts.length !== 4) return false
+  const octets = parts.map((p) => Number(p))
+  if (octets.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false
+  const [a, b, c, d] = octets as [number, number, number, number]
+  const n = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0
   const ranges: Array<[number, number]> = [
     [0x7f000000, 0x7fffffff], // 127.0.0.0/8 回环
     [0x0a000000, 0x0affffff], // 10.0.0.0/8 私网

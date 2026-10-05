@@ -21,11 +21,9 @@
 
 ## 验证
 
-- **源码改动经逐处审查完成**，但本机受限沙箱**无法运行 `pnpm build` 与 `vitest`**：
-  1. `pnpm install` 在打开 store 操作锁（`%LOCALAPPDATA%\pnpm-store-operation-locks`）时被拒——该路径由 pnpm 的 `env-paths` 解析、不接受 `LOCALAPPDATA` 环境变量重定向（实测子进程可见重定向、pnpm 仍用原路径）；
-  2. `tsdown` 构建会 spawn 原生 bundler（命名管道），沙箱 EPERM。
-  两项均为本机沙箱限制（约束#7），非代码缺陷。
-- **待办（干净环境）**：`pnpm install && pnpm build` → `git add lib/`（含 `lib/types`、`lib/client.js`、`lib/client-registry.js`）→ `npx vitest run` 补 C1/C2/C3/C6 回归 → `dsh --dump-config` 确认 `external_solver_*` 不在工具表、路由带守卫。
+- 用 `npm install --ignore-scripts --legacy-peer-deps`（绕开 pnpm store 操作锁）+ `node node_modules/typescript/bin/tsc -p tsconfig.build.json`（类型检查 exit 0）+ `npx tsdown`（exit 0）完成构建：`lib/index.js`、`lib/client.js`、`lib/client-registry.js`、`lib/types/*.d.ts` 全部生成并已提交。
+- `npx vitest run` 在本机受限沙箱无法运行：vite 打包 `vitest.config.ts` 时 spawn 子进程解析 realpath（`optimizeSafeRealPathSync` → `execFile`）触发 EPERM（约束#7 本机限制，非代码缺陷）。
+- 待办（干净环境）：`npx vitest run` 补 C1/C2/C3/C6 回归；`dsh --dump-config` 确认 `external_solver_*` 不在工具表、路由带守卫；`pnpm install` 重新生成与 package.json 对齐的 `pnpm-lock.yaml`。
 
 ## 未改
 

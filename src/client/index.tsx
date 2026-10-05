@@ -9,7 +9,7 @@
  * The UI dictionaries are registered into the DSH locale service, so the
  * panel follows the user's chosen language (see locales.ts).
  */
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { mountElectroLabEntry, mountElectroLabPanel } from './panel.tsx'
 import { installLocale, LOCALE_NS, dictionaries } from './locales.ts'
 
@@ -20,7 +20,7 @@ interface LocaleLike {
   subscribe(solver: () => void): () => void
 }
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Context {
     locale: LocaleLike
   }
