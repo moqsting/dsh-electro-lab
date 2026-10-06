@@ -584,6 +584,56 @@ async function readCapability(language: ArticleLanguage): Promise<CapabilityRepo
 }
 
 /** Start a background generation job and return its id; progress is polled via GET /generate-progress. */
+/**
+ * 审计 C1（纵深）：返回 path 最深「已存在祖先」的 realpath；不存在任何祖先时返回 null。
+ * 用于在目标尚未创建时仍能捕获「中间目录是链接」的逃逸。
+ * 必须用 realpathSync.native：普通 realpathSync 在 Windows 上**不解析 junction**
+ * （实测返回 junction 自身路径），而 junction 是 Windows 上不需管理员即可创建的逃逸路径。
+ */
+function deepestExistingRealPath(path: string): string | null {
+  let current = path
+  for (;;) {
+    try {
+      return realpathSync.native(current)
+    } catch {
+      /* 该层不存在，继续向上 */
+    }
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+}
+
+/**
+ * 审计 C1：解析输出路径并做「词法 + realpath」双重包含校验，限制在 outputRoot
+ * （默认 <home>/generated）内；越界即抛错。beginGenerate 在启动任务前先调一次
+ * （fail-fast，不浪费 LLM token），写入前再调一次（防父目录中途被换成符号链接）。
+ */
+export function resolveOutputTarget(
+  directory: string,
+  fileName: string,
+  isLatex: boolean,
+  home: string,
+): { targetDir: string; target: string } {
+  const root = resolve(home, 'generated')
+  const resolvedDir = isAbsolute(directory) ? resolve(directory) : resolve(root, directory)
+  const targetDir = isLatex ? join(resolvedDir, fileName.replace(/\.tex$/i, '')) : resolvedDir
+  const target = resolve(targetDir, fileName)
+  const rel = relative(root, target)
+  if (rel !== '' && (rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel))) {
+    throw new Error(`输出路径越界：${target} 不在 ${root} 内`)
+  }
+  const realRoot = deepestExistingRealPath(root)
+  if (realRoot !== null) {
+    const realAncestor = deepestExistingRealPath(target) ?? realRoot
+    const realRel = relative(realRoot, realAncestor)
+    if (realRel !== '' && (realRel.startsWith('..' + sep) || realRel === '..' || isAbsolute(realRel))) {
+      throw new Error(`输出路径越界：${target} 经符号链接指向 ${root} 外（realpath ${realAncestor}）`)
+    }
+  }
+  return { targetDir, target }
+}
+
 function startGenerateJob(
   ctx: GenerateContext,
   deps: GenerateDeps,
@@ -614,15 +664,8 @@ function startGenerateJob(
       // source, PDF and the compiler's .aux/.log/.synctex.gz — stays inside it.
       // Markdown is written flat and is never compiled (PDF is LaTeX-only).
       const isLatex = format === ArticleFormat.Latex
-      // 审计 C1：输出路径必须落在 outputRoot（默认 <home>/generated）内，越界即抛错。
-      const root = resolve(deps.home, 'generated')
-      const resolvedDir = isAbsolute(directory) ? resolve(directory) : resolve(root, directory)
-      const targetDir = isLatex ? join(resolvedDir, fileName.replace(/\.tex$/i, '')) : resolvedDir
-      const target = resolve(targetDir, fileName)
-      const rel = relative(root, target)
-      if (rel !== '' && (rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel))) {
-        throw new Error(`输出路径越界：${target} 不在 ${root} 内`)
-      }
+      // 审计 C1：写入前再校验一次（防父目录中途被换成符号链接）。
+      const { targetDir, target } = resolveOutputTarget(directory, fileName, isLatex, deps.home)
       mkdirSync(targetDir, { recursive: true })
       writeFileSync(target, article, 'utf8')
       if (compile && isLatex) {
@@ -677,6 +720,9 @@ async function beginGenerate(ctx: GenerateContext, deps: GenerateDeps, url: stri
   const fileName = rawName.length === 0
     ? normalizeFileName(`electro-lab-${record.id.slice(0, 8)}`, formatParam)
     : normalizeFileName(rawName, formatParam)
+
+  // 审计 C1：启动任务前先做输出路径校验（fail-fast，不浪费 LLM token）。
+  resolveOutputTarget(directory, fileName, formatParam === ArticleFormat.Latex, deps.home)
 
   const compile = params.get('compile') === 'true'
   // Pre-flight: an article that cannot be compiled is never generated, and the driver it would use is
